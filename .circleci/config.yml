@@ -114,7 +114,7 @@ workflows:
           filters:
             branches:
               only:
-                - main
+                - circleci-project-setup
       - build_image:
           requires:
             - checkout_code
