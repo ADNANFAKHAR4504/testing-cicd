@@ -1,31 +1,111 @@
-# Use the latest 2.1 version of CircleCI pipeline process engine.
-# See: https://circleci.com/docs/reference/configuration-reference
 version: 2.1
 
-# Define a job to be invoked later in a workflow.
-# See: https://circleci.com/docs/guides/orchestrate/jobs-steps/#jobs-overview & https://circleci.com/docs/reference/configuration-reference/#jobs
-jobs:
-  say-hello:
-    # Specify the execution environment. You can specify an image from Docker Hub or use one of our convenience images from CircleCI's Developer Hub.
-    # See: https://circleci.com/docs/guides/execution-managed/executor-intro/ & https://circleci.com/docs/reference/configuration-reference/#executor-job
+executors:
+  docker-and-aws:
     docker:
-      # Specify the version you desire here
-      # See: https://circleci.com/developer/images/image/cimg/base
-      - image: cimg/base:current
+      - image: cimg/aws:2023.06
 
-    # Add steps to the job
-    # See: https://circleci.com/docs/guides/orchestrate/jobs-steps/#steps-overview & https://circleci.com/docs/reference/configuration-reference/#steps
+jobs:
+  checkout_code:
+    executor: docker-and-aws
     steps:
-      # Checkout the code as the first step.
       - checkout
       - run:
-          name: "Say hello"
-          command: "echo Hello, World!"
+          name: Verify repository contents
+          command: ls -al
+      - persist_to_workspace:
+          root: .
+          paths:
+            - .
 
-# Orchestrate jobs using workflows
-# See: https://circleci.com/docs/guides/orchestrate/workflows/ & https://circleci.com/docs/reference/configuration-reference/#workflows
+  build_image:
+    executor: docker-and-aws
+    steps:
+      - attach_workspace:
+          at: .
+      - setup_remote_docker
+      - run:
+          name: Build Docker image
+          command: |
+            IMAGE_NAME="${IMAGE_REPO_NAME:-python-frontend}"
+            docker build -t "${IMAGE_NAME}:build-${CIRCLE_SHA1}" .
+            mkdir -p workspace/docker
+            docker save "${IMAGE_NAME}:build-${CIRCLE_SHA1}" -o workspace/docker/build-image.tar
+      - persist_to_workspace:
+          root: workspace
+          paths:
+            - docker
+
+  tag_image:
+    executor: docker-and-aws
+    steps:
+      - attach_workspace:
+          at: workspace
+      - setup_remote_docker
+      - run:
+          name: Tag Docker image for ECR
+          command: |
+            IMAGE_NAME="${IMAGE_REPO_NAME:-python-frontend}"
+            ECR_REGISTRY="${ECR_ACCOUNT_URL:-556809693064.dkr.ecr.us-east-1.amazonaws.com}"
+            docker load -i workspace/docker/build-image.tar
+            docker tag "${IMAGE_NAME}:build-${CIRCLE_SHA1}" "${ECR_REGISTRY}/${IMAGE_NAME}:${CIRCLE_SHA1}"
+            docker tag "${IMAGE_NAME}:build-${CIRCLE_SHA1}" "${ECR_REGISTRY}/${IMAGE_NAME}:latest"
+            docker save "${ECR_REGISTRY}/${IMAGE_NAME}:${CIRCLE_SHA1}" -o workspace/docker/tagged-image.tar
+      - persist_to_workspace:
+          root: workspace
+          paths:
+            - docker
+
+  scan_image:
+    executor: docker-and-aws
+    steps:
+      - attach_workspace:
+          at: workspace
+      - setup_remote_docker
+      - run:
+          name: Install Trivy scanner
+          command: |
+            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+      - run:
+          name: Scan Docker image for vulnerabilities
+          command: |
+            IMAGE_NAME="${IMAGE_REPO_NAME:-python-frontend}"
+            ECR_REGISTRY="${ECR_ACCOUNT_URL:-556809693064.dkr.ecr.us-east-1.amazonaws.com}"
+            docker load -i workspace/docker/tagged-image.tar
+            trivy image --exit-code 0 --severity HIGH,CRITICAL "${ECR_REGISTRY}/${IMAGE_NAME}:${CIRCLE_SHA1}"
+
+  push_image:
+    executor: docker-and-aws
+    steps:
+      - attach_workspace:
+          at: workspace
+      - setup_remote_docker
+      - run:
+          name: Login to AWS ECR
+          command: |
+            aws ecr get-login-password --region "${AWS_DEFAULT_REGION:-us-east-1}" | docker login --username AWS --password-stdin "${ECR_ACCOUNT_URL:-556809693064.dkr.ecr.us-east-1.amazonaws.com}"
+      - run:
+          name: Push Docker images to ECR
+          command: |
+            IMAGE_NAME="${IMAGE_REPO_NAME:-python-frontend}"
+            ECR_REGISTRY="${ECR_ACCOUNT_URL:-556809693064.dkr.ecr.us-east-1.amazonaws.com}"
+            docker load -i workspace/docker/tagged-image.tar
+            docker push "${ECR_REGISTRY}/${IMAGE_NAME}:${CIRCLE_SHA1}"
+            docker push "${ECR_REGISTRY}/${IMAGE_NAME}:latest"
+
 workflows:
-  say-hello-workflow: # This is the name of the workflow, feel free to change it to better match your workflow.
-    # Inside the workflow, you define the jobs you want to run.
+  build_and_release:
     jobs:
-      - say-hello
+      - checkout_code
+      - build_image:
+          requires:
+            - checkout_code
+      - tag_image:
+          requires:
+            - build_image
+      - scan_image:
+          requires:
+            - tag_image
+      - push_image:
+          requires:
+            - scan_image
