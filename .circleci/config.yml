@@ -47,10 +47,14 @@ jobs:
           command: |
             IMAGE_NAME="${IMAGE_REPO_NAME:-python-frontend}"
             ECR_REGISTRY="${ECR_ACCOUNT_URL:-556809693064.dkr.ecr.us-east-1.amazonaws.com}"
+            TARGET_REPO="${ECR_REGISTRY}"
+            if [[ "${TARGET_REPO}" != */* ]]; then
+              TARGET_REPO="${TARGET_REPO}/${IMAGE_NAME}"
+            fi
             docker load -i workspace/docker/build-image.tar
-            docker tag "${IMAGE_NAME}:build-${CIRCLE_SHA1}" "${ECR_REGISTRY}/${IMAGE_NAME}:${CIRCLE_SHA1}"
-            docker tag "${IMAGE_NAME}:build-${CIRCLE_SHA1}" "${ECR_REGISTRY}/${IMAGE_NAME}:latest"
-            docker save "${ECR_REGISTRY}/${IMAGE_NAME}:${CIRCLE_SHA1}" -o workspace/docker/tagged-image.tar
+            docker tag "${IMAGE_NAME}:build-${CIRCLE_SHA1}" "${TARGET_REPO}:${CIRCLE_SHA1}"
+            docker tag "${IMAGE_NAME}:build-${CIRCLE_SHA1}" "${TARGET_REPO}:latest"
+            docker save "${TARGET_REPO}:${CIRCLE_SHA1}" -o workspace/docker/tagged-image.tar
       - persist_to_workspace:
           root: workspace
           paths:
@@ -71,8 +75,12 @@ jobs:
           command: |
             IMAGE_NAME="${IMAGE_REPO_NAME:-python-frontend}"
             ECR_REGISTRY="${ECR_ACCOUNT_URL:-556809693064.dkr.ecr.us-east-1.amazonaws.com}"
+            TARGET_REPO="${ECR_REGISTRY}"
+            if [[ "${TARGET_REPO}" != */* ]]; then
+              TARGET_REPO="${TARGET_REPO}/${IMAGE_NAME}"
+            fi
             docker load -i workspace/docker/tagged-image.tar
-            trivy image --exit-code 0 --severity HIGH,CRITICAL "${ECR_REGISTRY}/${IMAGE_NAME}:${CIRCLE_SHA1}"
+            trivy image --exit-code 0 --severity HIGH,CRITICAL "${TARGET_REPO}:${CIRCLE_SHA1}"
 
   push_image:
     executor: docker-and-aws
@@ -83,20 +91,30 @@ jobs:
       - run:
           name: Login to AWS ECR
           command: |
-            aws ecr get-login-password --region "${AWS_DEFAULT_REGION:-us-east-1}" | docker login --username AWS --password-stdin "${ECR_ACCOUNT_URL:-556809693064.dkr.ecr.us-east-1.amazonaws.com}"
+            ECR_REGISTRY="${ECR_ACCOUNT_URL:-556809693064.dkr.ecr.us-east-1.amazonaws.com}"
+            LOGIN_REGISTRY="${ECR_REGISTRY%%/*}"
+            aws ecr get-login-password --region "${AWS_DEFAULT_REGION:-us-east-1}" | docker login --username AWS --password-stdin "${LOGIN_REGISTRY}"
       - run:
           name: Push Docker images to ECR
           command: |
             IMAGE_NAME="${IMAGE_REPO_NAME:-python-frontend}"
             ECR_REGISTRY="${ECR_ACCOUNT_URL:-556809693064.dkr.ecr.us-east-1.amazonaws.com}"
+            TARGET_REPO="${ECR_REGISTRY}"
+            if [[ "${TARGET_REPO}" != */* ]]; then
+              TARGET_REPO="${TARGET_REPO}/${IMAGE_NAME}"
+            fi
             docker load -i workspace/docker/tagged-image.tar
-            docker push "${ECR_REGISTRY}/${IMAGE_NAME}:${CIRCLE_SHA1}"
-            docker push "${ECR_REGISTRY}/${IMAGE_NAME}:latest"
+            docker push "${TARGET_REPO}:${CIRCLE_SHA1}"
+            docker push "${TARGET_REPO}:latest"
 
 workflows:
   build_and_release:
     jobs:
-      - checkout_code
+      - checkout_code:
+          filters:
+            branches:
+              only:
+                - main
       - build_image:
           requires:
             - checkout_code
