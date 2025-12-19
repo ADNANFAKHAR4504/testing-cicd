@@ -104,6 +104,8 @@ jobs:
               TARGET_REPO="${TARGET_REPO}/${IMAGE_NAME}"
             fi
             docker load -i workspace/docker/tagged-image.tar
+            # Re-create the latest tag because only the SHA tag is stored in the tarball
+            docker tag "${TARGET_REPO}:${CIRCLE_SHA1}" "${TARGET_REPO}:latest"
             docker push "${TARGET_REPO}:${CIRCLE_SHA1}"
             docker push "${TARGET_REPO}:latest"
 
